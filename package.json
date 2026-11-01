@@ -1,0 +1,55 @@
+{
+  "name": "dsh-workspace-pins",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Pin workspaces to the top of the sidebar so a long workspace list keeps a fixed order / 固定工作区到侧边栏顶部，工作区再多也不会把常用的挤下去",
+  "license": "MIT",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-workbuddy",
+    "workspace",
+    "pin",
+    "sidebar",
+    "ui"
+  ],
+  "type": "module",
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./lib/client.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "lib/client.js",
+    "cordis.patch.yml",
+    "locale/en.json",
+    "locale/zh.json",
+    "icon.svg",
+    "test/client-selfcheck.mjs",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-api-workspace-controller",
+        "@deepseek-ai/dsh-client-locale"
+      ]
+    }
+  },
+  "scripts": {
+    "test": "node test/client-selfcheck.mjs"
+  }
+}
