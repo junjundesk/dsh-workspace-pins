@@ -34,9 +34,12 @@ const ReactStub = {
 
 let slots = []
 let cursor = 0
-/** 简易单次渲染：每次调用重置 hook 槽位，够验证组件不抛错、结构符合预期。 */
-function render(component, props) {
-  slots = []
+/**
+ * 简易渲染：reset=true 时重置 hook 槽位（首次挂载），reset=false 时保留槽位，
+ * 用来模拟「同一实例重渲染」——组件内部 setState 后的确认条就靠它验证。
+ */
+function render(component, props, reset = true) {
+  if (reset) slots = []
   cursor = 0
   return component(props)
 }
@@ -60,7 +63,7 @@ function check(name, condition, detail) {
   failures.push(detail ? `${name} — ${detail}` : name)
 }
 
-function createHarness(initialIds, storedPins) {
+function createHarness(initialIds, storedPins, sessionsByWorkspace = {}) {
   let module = null
   const storage = new Map()
   if (storedPins) storage.set('dsh.workspace-pins.v1', JSON.stringify({ v: 1, pins: storedPins }))
@@ -92,9 +95,19 @@ function createHarness(initialIds, storedPins) {
   check('模块已通过 __ModuleLoader__ 注册', module !== null)
   check('模块 id 与包名一致', module?.id === 'dsh-workspace-pins', module?.id)
 
-  let snapshot = { items: initialIds.map((id) => ({ workspaceId: id, title: id, path: `/w/${id}` })), phase: 'ready' }
+  const buildItems = (ids) =>
+    ids.map((id) => ({
+      workspaceId: id,
+      title: id,
+      path: `/w/${id}`,
+      sessionIds: sessionsByWorkspace[id] ?? [],
+    }))
+
+  let snapshot = { items: buildItems(initialIds), phase: 'ready' }
   const listeners = new Set()
   const writes = []
+  const archiveCalls = []
+  const deleteCalls = []
 
   const workspaces = {
     list: {
@@ -112,9 +125,21 @@ function createHarness(initialIds, storedPins) {
       ids.splice(from, 1)
       const at = before === undefined ? ids.length : ids.indexOf(before)
       ids.splice(at === -1 ? ids.length : at, 0, id)
-      snapshot = { items: ids.map((wid) => ({ workspaceId: wid, title: wid, path: `/w/${wid}` })), phase: 'ready' }
+      snapshot = { items: buildItems(ids), phase: 'ready' }
       listeners.forEach((listener) => listener())
       return ids
+    },
+    archiveSession: async (sessionId, options) => {
+      archiveCalls.push({ sessionId, options })
+      return []
+    },
+    delete: async (workspaceId) => {
+      deleteCalls.push(workspaceId)
+      snapshot = {
+        items: snapshot.items.filter((item) => String(item.workspaceId) !== workspaceId),
+        phase: 'ready',
+      }
+      listeners.forEach((listener) => listener())
     },
   }
 
@@ -149,6 +174,8 @@ function createHarness(initialIds, storedPins) {
     effects,
     locales,
     writes,
+    archiveCalls,
+    deleteCalls,
     snapshot: () => snapshot,
     storage,
     loadFactory() {
@@ -284,9 +311,76 @@ function createHarness(initialIds, storedPins) {
   check('新固定的接在固定区末尾', JSON.stringify(pinnedAgain.pins) === '["gamma","alpha"]', JSON.stringify(pinnedAgain.pins))
 }
 
+// ── 8. 删除工作区：确认条 → 归档会话 → 移除注册 → 从固定名单清除 ─────────
+{
+  const harness = createHarness(['alpha', 'beta'], ['beta'], { alpha: ['s1', 's2'] })
+  harness.run()
+  await harness.settle()
+
+  const footerEntry = harness.registered.find((entry) => entry.options.name === 'sidebar.footer.action')
+  const panelEntry = harness.registered.find((entry) => entry.options.name === 'shell.overlay')
+  const t = (key, params) => (params ? `${key}:${JSON.stringify(params)}` : key)
+
+  render(footerEntry.component, { wide: true, t }).props.onClick({ preventDefault() {}, stopPropagation() {} })
+
+  const props = { t, useWorkspaces: (selector) => selector(harness.snapshot()) }
+  let panel = render(panelEntry.component, props)
+  check('面板未打开确认条时不显示确认条', walk(panel, (n) => n.props?.className === 'dswp-confirm').length === 0)
+
+  const deleteButtons = walk(
+    panel,
+    (node) => node.type === 'button' && node.props?.['aria-label'] === 'panel.delete'
+  )
+  check('每个工作区都有删除按钮', deleteButtons.length === 2, `按钮数 ${deleteButtons.length}`)
+
+  // 第一行是已固定的 beta；这里删未固定的 alpha（第二行）
+  deleteButtons[1].props.onClick()
+  panel = render(panelEntry.component, props, false)
+
+  const confirmBoxes = walk(panel, (node) => node.props?.className === 'dswp-confirm')
+  check('点删除后出现确认条', confirmBoxes.length === 1, `确认条 ${confirmBoxes.length}`)
+  const confirmTexts = walk(panel, (node) => node.props?.className === 'dswp-confirm-text')
+  const confirmText = String(confirmTexts[0]?.children?.[0] ?? '')
+  check('确认文案点出会话数量', confirmText.includes('"count":2'), confirmText)
+  check('确认文案说明磁盘文件夹保留', confirmText.includes('deleteWithSessions'), confirmText)
+
+  const confirmButtons = walk(
+    panel,
+    (node) => node.type === 'button' && node.props?.className === 'dswp-text-btn dswp-danger-text'
+  )
+  check('确认条有删除按钮', confirmButtons.length === 1)
+  confirmButtons[0].props.onClick()
+  for (let round = 0; round < 6; round += 1) await harness.settle()
+
+  check('先归档名下会话', harness.archiveCalls.map((call) => call.sessionId).join(',') === 's1,s2', JSON.stringify(harness.archiveCalls))
+  check(
+    '归档带 stopActivity（运行中的也一并停）',
+    harness.archiveCalls.every((call) => call.options?.stopActivity === true)
+  )
+  check('再移除工作区注册', harness.deleteCalls.join(',') === 'alpha', JSON.stringify(harness.deleteCalls))
+  check('删除后工作区从列表消失', harness.currentOrder().join(',') === 'beta', harness.currentOrder().join(','))
+  check(
+    '固定名单不受影响（删的是未固定项）',
+    JSON.parse(harness.storage.get('dsh.workspace-pins.v1')).pins.join(',') === 'beta'
+  )
+
+  // 再删已固定的那个：固定名单要同步清掉
+  panel = render(panelEntry.component, props, false)
+  const remaining = walk(panel, (node) => node.type === 'button' && node.props?.['aria-label'] === 'panel.delete')
+  check('剩下一行一个删除按钮', remaining.length === 1, `按钮数 ${remaining.length}`)
+  remaining[0].props.onClick()
+  panel = render(panelEntry.component, props, false)
+  const confirm2 = walk(panel, (node) => node.type === 'button' && node.props?.className === 'dswp-text-btn dswp-danger-text')
+  confirm2[0].props.onClick()
+  for (let round = 0; round < 6; round += 1) await harness.settle()
+
+  check('删掉固定项后固定名单也清空', JSON.parse(harness.storage.get('dsh.workspace-pins.v1')).pins.length === 0)
+  check('工作区列表清空', harness.currentOrder().length === 0, harness.currentOrder().join(','))
+}
+
 if (failures.length > 0) {
   console.error('✗ 自检失败：')
   failures.forEach((item) => console.error('  -', item))
   process.exit(1)
 }
-console.log('✓ 客户端半边自检通过（装载 / 注册 / 顺序守卫 / 收敛 / 失效名单 / 渲染 / 交互写回）')
+console.log('✓ 客户端半边自检通过（装载 / 注册 / 顺序守卫 / 收敛 / 失效名单 / 渲染 / 交互写回 / 删除工作区）')
