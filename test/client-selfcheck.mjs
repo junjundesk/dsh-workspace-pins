@@ -281,7 +281,7 @@ function createHarness(initialIds, storedPins) {
 
   pinButtons[1]?.props?.onClick()
   const pinnedAgain = JSON.parse(harness.storage.get('dsh.workspace-pins.v1'))
-  check('新固定的排到最前', JSON.stringify(pinnedAgain.pins) === '["alpha","gamma"]', JSON.stringify(pinnedAgain.pins))
+  check('新固定的接在固定区末尾', JSON.stringify(pinnedAgain.pins) === '["gamma","alpha"]', JSON.stringify(pinnedAgain.pins))
 }
 
 if (failures.length > 0) {
