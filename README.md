@@ -1,6 +1,6 @@
 # 工作区固定 · dsh-workspace-pins
 
-> 一个 **dsh 插件**（DeepSeek WorkBuddy 的 Web UI 插件）：把常用的工作区钉在侧边栏最上面，
+> 一个 **dsh 插件**（DeepSeek DSH 的 Web UI 插件）：把常用的工作区钉在侧边栏最上面，
 > 顺序不再被新建的文件夹挤乱；需要的话，还能把不要的工作区连同它的对话记录一起永久删掉。
 
 | | |
