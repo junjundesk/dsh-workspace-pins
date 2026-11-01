@@ -1,3 +1,5 @@
+> QQ 交流群：**744475787**
+
 # 工作区固定 · dsh-workspace-pins
 
 > 一个 **dsh 插件**（DeepSeek DSH 的 Web UI 插件）：把常用的工作区钉在侧边栏最上面，
