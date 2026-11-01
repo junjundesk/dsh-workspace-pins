@@ -108,6 +108,29 @@ function createHarness(initialIds, storedPins, sessionsByWorkspace = {}) {
   const writes = []
   const archiveCalls = []
   const deleteCalls = []
+  const fetchCalls = []
+  const refreshCalls = []
+  /** 让删除端点默认成功；failed 场景由用例改写 fetchMode。 */
+  const fetchState = { mode: 'ok', failed: [] }
+  globalThis.fetch = async (url, init) => {
+    fetchCalls.push({ url, init })
+    const payload = JSON.parse(init?.body ?? '{}')
+    if (fetchState.mode === 'http-error') {
+      return { ok: false, status: 500, json: async () => ({ ok: false, error: 'host blew up' }) }
+    }
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        ok: true,
+        root: 'C:/tmp/sessions',
+        removed: fetchState.mode === 'ok' ? (payload.sessionIds ?? []) : [],
+        missing: [],
+        failed: fetchState.mode === 'failed' ? [{ sessionId: payload.sessionIds?.[0], message: 'EBUSY' }] : [],
+        rootMissing: false,
+      }),
+    }
+  }
 
   const workspaces = {
     list: {
@@ -147,7 +170,11 @@ function createHarness(initialIds, storedPins, sessionsByWorkspace = {}) {
   const effects = []
   const locales = []
   const ctx = {
-    get: (name) => (name === 'workspaces' ? workspaces : undefined),
+    get: (name) => {
+      if (name === 'workspaces') return workspaces
+      if (name === 'sessions') return { refresh: async () => refreshCalls.push(1) }
+      return undefined
+    },
     effect: (callback, label) => {
       const dispose = callback()
       effects.push({ label, dispose })
@@ -176,6 +203,9 @@ function createHarness(initialIds, storedPins, sessionsByWorkspace = {}) {
     writes,
     archiveCalls,
     deleteCalls,
+    fetchCalls,
+    refreshCalls,
+    fetchState,
     snapshot: () => snapshot,
     storage,
     loadFactory() {
@@ -357,6 +387,13 @@ function createHarness(initialIds, storedPins, sessionsByWorkspace = {}) {
     '归档带 stopActivity（运行中的也一并停）',
     harness.archiveCalls.every((call) => call.options?.stopActivity === true)
   )
+  check('归档之后请求宿主删日志', harness.fetchCalls.length === 1, `请求 ${harness.fetchCalls.length} 次`)
+  check(
+    '删除端点收到全部会话 id',
+    JSON.parse(harness.fetchCalls[0]?.init?.body ?? '{}').sessionIds?.join(',') === 's1,s2',
+    harness.fetchCalls[0]?.init?.body
+  )
+  check('删日志后刷新会话列表', harness.refreshCalls.length === 1, `刷新 ${harness.refreshCalls.length} 次`)
   check('再移除工作区注册', harness.deleteCalls.join(',') === 'alpha', JSON.stringify(harness.deleteCalls))
   check('删除后工作区从列表消失', harness.currentOrder().join(',') === 'beta', harness.currentOrder().join(','))
   check(
@@ -376,6 +413,35 @@ function createHarness(initialIds, storedPins, sessionsByWorkspace = {}) {
 
   check('删掉固定项后固定名单也清空', JSON.parse(harness.storage.get('dsh.workspace-pins.v1')).pins.length === 0)
   check('工作区列表清空', harness.currentOrder().length === 0, harness.currentOrder().join(','))
+}
+
+// ── 9. 删日志失败时不删注册，并把原因留在面板上 ─────────────────────
+{
+  const harness = createHarness(['alpha'], [], { alpha: ['s1'] })
+  harness.run()
+  await harness.settle()
+
+  const footerEntry = harness.registered.find((entry) => entry.options.name === 'sidebar.footer.action')
+  const panelEntry = harness.registered.find((entry) => entry.options.name === 'shell.overlay')
+  const t = (key, params) => (params ? `${key}:${JSON.stringify(params)}` : key)
+  render(footerEntry.component, { wide: true, t }).props.onClick({ preventDefault() {}, stopPropagation() {} })
+
+  const props = { t, useWorkspaces: (selector) => selector(harness.snapshot()) }
+  let panel = render(panelEntry.component, props)
+  walk(panel, (node) => node.type === 'button' && node.props?.['aria-label'] === 'panel.delete')[0].props.onClick()
+  panel = render(panelEntry.component, props, false)
+  walk(panel, (node) => node.type === 'button' && node.props?.className === 'dswp-text-btn dswp-danger-text')[0].props.onClick()
+
+  harness.fetchState.mode = 'failed'
+  for (let round = 0; round < 6; round += 1) await harness.settle()
+
+  check('失败时不删工作区注册', harness.deleteCalls.length === 0, JSON.stringify(harness.deleteCalls))
+  check('失败时不刷新列表', harness.refreshCalls.length === 0, `刷新 ${harness.refreshCalls.length} 次`)
+
+  panel = render(panelEntry.component, props, false)
+  const errors = walk(panel, (node) => node.props?.className === 'dswp-confirm-error')
+  check('面板显示删除失败原因', errors.length === 1, `错误行 ${errors.length}`)
+  check('错误文案含底层原因', String(errors[0]?.children?.[0] ?? '').includes('EBUSY'), JSON.stringify(errors[0]?.children))
 }
 
 if (failures.length > 0) {
