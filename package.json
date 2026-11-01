@@ -34,7 +34,8 @@
     "LICENSE"
   ],
   "engines": {
-    "node": ">=22"
+    "node": ">=22",
+    "dsh": ">=0.2.2-alpha.2"
   },
   "dsh": {
     "bundle": {
